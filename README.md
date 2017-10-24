@@ -1,2 +1,2 @@
 # pwnable
-pwnable.tw war game write-ups
+pwnable.tw wargame write-ups
