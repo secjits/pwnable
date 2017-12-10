@@ -303,3 +303,66 @@ fin:
 
 $ nasm -f bin moreSubtle.asm -o /dev/stdout | nc chall.pwnable.tw 10001
 Give my your shellcode:FLAG{sh3llc0ding_w1th_op3n_r34d_writ3}
+
+================== orw.c ===============================
+I went ahead and wrote the C code which compiles to the problem's orw ELF
+
+#include <stdio.h>
+#include <sys/prctl.h>
+#include <string.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <linux/seccomp.h>
+#include <linux/filter.h>
+
+char shellcode[200];
+
+//struct sock_filter {
+	/* Definition */
+        //       __u16 code;                 /* WORD Actual filter code */	//0x0020
+        //       __u8  jt;                   /* HALFWORD Jump true */		//0x00
+        //       __u8  jf;                   /* HALFWORD Jump false */		//0x00
+        //       __u32 k;                    /* DWORD Generic multiuse field */	//0x00000004
+	/* IMPLEMENTING AS uint8_t[96] for simplicity */
+//};
+
+uint8_t bpf_global[96] = {
+0x20, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x15, 0x00, 0x00, 0x09, 0x03, 0x00, 0x00, 0x40,
+0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x15, 0x00, 0x07, 0x00, 0xad, 0x00, 0x00, 0x00,
+0x15, 0x00, 0x06, 0x00, 0x77, 0x00, 0x00, 0x00, 0x15, 0x00, 0x05, 0x00, 0xfc, 0x00, 0x00, 0x00,
+0x15, 0x00, 0x04, 0x00,	0x01, 0x00, 0x00, 0x00, 0x15, 0x00, 0x03, 0x00,	0x05, 0x00, 0x00, 0x00,
+0x15, 0x00, 0x02, 0x00,	0x03, 0x00, 0x00, 0x00,	0x15, 0x00, 0x01, 0x00,	0x04, 0x00, 0x00, 0x00,
+0x06, 0x00, 0x00, 0x00,	0x26, 0x00, 0x05, 0x00,	0x06, 0x00, 0x00, 0x00,	0x00, 0x00, 0xff, 0x7f};
+
+				//ebx=0x8048640 
+void orw_seccomp(){
+	//Set up bpf
+	
+	uint8_t bpf_local[96];
+	//gef➤  x/2dwx $eax
+	//0xffffcf84:     0x0000000c      0xffffcf8c
+	
+	
+	struct sock_fprog bpf_struct = { 		//lea eax,[ebp-0x84]; push eax
+		.len = 12,
+		.filter = (struct sock_filter *)bpf_local,
+	};
+	memcpy(&bpf_local,&bpf_global,96); 		//edi=ebp-0x7c //esi=0x8048640 //ecx=0x18=24dwords=96bytes
+
+	//#define PR_SET_NO_NEW_PRIVS	38
+	prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0);		//prctl(38,1,0,0,0) <- prctl(0x26,0x1,0x0,0x0,0x0)
+	//#define PR_SET_SECCOMP	22
+	//#define SECCOMP_MODE_FILTER	2 
+        prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&bpf_struct); //prctl(22,2,&bpf_struct) <- prctl(0x16,0x2,*eax)
+}
+int main(){
+	orw_seccomp();
+	printf("Give me your shellcode:");	
+	read(0,shellcode,200); 				//from ELF: (0,0x804a606,0xc8)
+	void (*f)();					//define f as a pointer to a function which returns void 
+	f = (void (*)())shellcode;			//make f point to *shellcode, cast as function returning void
+	(void)(*f)();					//call f() -> run shellcode
+	exit(0);
+}
+
